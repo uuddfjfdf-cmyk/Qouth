@@ -3,7 +3,31 @@
 //  Node.js + Express + MongoDB + JWT
 // ═══════════════════════════════════════════════
 
+// ── LOAD ENV (HARUS PALING ATAS, SEBELUM APAPUN) ─
 require('dotenv').config();
+
+// ── DEBUG: CEK ENV VARS SAAT STARTUP ────────────
+console.log('🔍 ENV Check:');
+console.log('   NODE_ENV   :', process.env.NODE_ENV   || '(tidak di-set)');
+console.log('   PORT       :', process.env.PORT       || '(tidak di-set, default 3000)');
+console.log('   MONGO_URI  :', process.env.MONGO_URI  ? '✅ terbaca' : '❌ TIDAK TERBACA');
+console.log('   JWT_SECRET :', process.env.JWT_SECRET ? '✅ terbaca' : '❌ TIDAK TERBACA');
+console.log('   FRONTEND_URL:', process.env.FRONTEND_URL || '(tidak di-set)');
+
+// ── VALIDASI ENV WAJIB (FAIL FAST) ──────────────
+const REQUIRED_ENV = ['MONGO_URI', 'JWT_SECRET', 'JWT_REFRESH_SECRET'];
+const missingEnv = REQUIRED_ENV.filter((key) => !process.env[key]);
+
+if (missingEnv.length > 0) {
+  console.error('\n❌ Environment variable berikut belum di-set:');
+  missingEnv.forEach((key) => console.error(`   - ${key}`));
+  console.error('\n💡 Solusi:');
+  console.error('   • Lokal  : pastikan file .env ada dan berisi variable di atas');
+  console.error('   • Railway: buka Settings → Variables → tambahkan variable tersebut');
+  console.error('   • Pastikan nama variable PERSIS sama (case-sensitive)\n');
+  process.exit(1);
+}
+
 const express    = require('express');
 const mongoose   = require('mongoose');
 const bcrypt     = require('bcryptjs');
@@ -32,12 +56,33 @@ const loginLimiter = rateLimit({
 });
 
 // ── MONGODB CONNECTION ──────────────────────────
-mongoose.connect(process.env.MONGO_URL)
-  .then(() => console.log('✅ MongoDB terhubung'))
-  .catch(err => {
+console.log('\n🔌 Menghubungkan ke MongoDB...');
+
+mongoose.connect(process.env.MONGO_URI, {
+  serverSelectionTimeoutMS : 30000, // timeout 30 detik
+  socketTimeoutMS          : 45000,
+  family                   : 4,     // paksa IPv4 (fix masalah koneksi di Railway/cloud)
+})
+  .then(() => {
+    console.log('✅ MongoDB terhubung:', mongoose.connection.host);
+  })
+  .catch((err) => {
     console.error('❌ MongoDB gagal konek:', err.message);
+    console.error('\n💡 Kemungkinan penyebab:');
+    console.error('   • MONGO_URI salah format (harus: mongodb+srv://user:pass@host/db)');
+    console.error('   • IP server belum di-whitelist di MongoDB Atlas (gunakan 0.0.0.0/0 untuk Railway)');
+    console.error('   • Username/password salah');
+    console.error('   • Cluster Atlas sedang mati\n');
     process.exit(1);
   });
+
+// ── MONGOOSE EVENT LISTENERS ────────────────────
+mongoose.connection.on('disconnected', () => {
+  console.warn('⚠️  MongoDB terputus. Mencoba reconnect...');
+});
+mongoose.connection.on('reconnected', () => {
+  console.log('🔄 MongoDB berhasil reconnect');
+});
 
 // ── SCHEMA & MODEL ─────────────────────────────
 const userSchema = new mongoose.Schema({
@@ -372,9 +417,33 @@ app.get('/api/user/profile', requireAuth, async (req, res) => {
   }
 });
 
+// ── GLOBAL ERROR HANDLER ─────────────────────────
+app.use((err, req, res, next) => {
+  console.error('🔥 Unhandled error:', err);
+  respond(res, 500, false, 'Internal server error');
+});
+
 // ── START SERVER ─────────────────────────────────
 app.listen(PORT, () => {
-  console.log(`🚀 AuthLab server berjalan di http://localhost:${PORT}`);
-  console.log(`📋 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`\n🚀 AuthLab server berjalan di http://localhost:${PORT}`);
+  console.log(`📋 Environment : ${process.env.NODE_ENV || 'development'}`);
+  console.log(`📋 File aktif  : ${__filename}\n`);
 });
-                 
+
+// ── GRACEFUL SHUTDOWN ────────────────────────────
+process.on('SIGTERM', async () => {
+  console.log('⚠️  SIGTERM diterima. Menutup server dengan bersih...');
+  await mongoose.connection.close();
+  console.log('✅ Koneksi MongoDB ditutup. Server berhenti.');
+  process.exit(0);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('💥 Uncaught Exception:', err);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('💥 Unhandled Rejection:', reason);
+  process.exit(1);
+});
